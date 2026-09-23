@@ -1,0 +1,5 @@
+{
+  "name": "offstage-electron-probe",
+  "private": true,
+  "main": "main.js"
+}

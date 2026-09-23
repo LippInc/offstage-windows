@@ -1,0 +1,32 @@
+// Types for offstage.cjs (offstage-windows; when copying the file into a TypeScript project, copy this one beside it).
+
+/** True where offstage hides windows: on Windows, unless OFFSTAGE is 0, false, off or no. */
+export declare function enabled(env?: Record<string, string | undefined>): boolean
+
+/**
+ * The helper's path, compiled on first use and cached. Windows only. Throws when it cannot be compiled or its first run
+ * fails, and again on every later call in the same process.
+ */
+export declare function helper(): string
+
+/**
+ * Options for Playwright's `_electron.launch()` that start the app offstage (the helper stands in as the executable).
+ * Returns the options unchanged when offstage is off or cannot run.
+ */
+export declare function electronLaunchOptions<
+  T extends { executablePath?: string; cwd?: string; env?: Record<string, string | undefined> },
+>(options?: T): T
+
+/**
+ * `[command, args]` for child_process.spawn or execFile that run `file args` offstage; unchanged when offstage is off.
+ * What the program leaves running when it exits is stopped after a moment, unless `waitForAll` (wait for the whole tree:
+ * an app that restarts itself or hands over) or `keepOrphans` (leave it). `timeout` is in seconds. `desktop` runs it on
+ * an app's desktop (the app's OFFSTAGE_DESKTOP) instead of a new one, for a helper that works with the app's windows by
+ * handle: from any other desktop the handle reads as an empty, hidden window.
+ */
+/** Throws a TypeError when `desktop` is not a desktop's name (letters, digits, `_`, `.`, `-`). */
+export declare function spawnArgs(
+  file: string,
+  args?: readonly string[],
+  options?: { waitForAll?: boolean; keepOrphans?: boolean; timeout?: number; desktop?: string },
+): [string, string[]]

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - name: Compile the helper and run a command offstage
+        run: node offstage.cjs --check
+      - name: What the helper adds to a launch
+        run: node test/bench.mjs 10
+      - name: Self-test
+        run: node test/selftest.mjs
+
+  passthrough:
+    # Elsewhere every function passes its input through unchanged.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: |
+          node -e "const o = require('./offstage.cjs'); const got = JSON.stringify([o.enabled(), o.spawnArgs('x', ['a']), o.electronLaunchOptions({ args: ['.'] })]); if (got !== JSON.stringify([false, ['x', ['a']], { args: ['.'] }])) { console.error(got); process.exit(1) } console.log('passthrough ok:', got)"
+          node offstage.cjs node -e "console.log('ran as is')"

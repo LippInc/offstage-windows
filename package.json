@@ -1,0 +1,58 @@
+{
+  "name": "offstage-windows",
+  "version": "0.1.0",
+  "description": "Run automated GUI test sessions on Windows (Electron + Playwright e2e, CDP screenshot scripts, packaged-app smoke tests) on a hidden desktop: no windows on your screen, no stolen focus, and test runs that can go side by side.",
+  "keywords": [
+    "windows",
+    "electron",
+    "playwright",
+    "e2e",
+    "testing",
+    "gui-testing",
+    "headless",
+    "hidden-desktop",
+    "xvfb",
+    "focus-stealing",
+    "ai-agents",
+    "claude-code"
+  ],
+  "homepage": "https://github.com/LippInc/offstage-windows#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LippInc/offstage-windows.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LippInc/offstage-windows/issues"
+  },
+  "license": "MIT",
+  "author": "Martin Lipp (lippinc)",
+  "main": "offstage.cjs",
+  "types": "offstage.d.cts",
+  "bin": {
+    "offstage-windows": "offstage.cjs"
+  },
+  "files": [
+    "offstage.cjs",
+    "offstage.d.cts"
+  ],
+  "scripts": {
+    "check": "node offstage.cjs --check",
+    "selftest": "node test/selftest.mjs",
+    "watch": "node test/watch.mjs",
+    "bench": "node test/bench.mjs",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "electron": "44.3.0",
+    "prettier": "3.9.6"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
