@@ -1,5 +1,7 @@
 # offstage-windows
 
+[![ci](https://github.com/LippInc/offstage-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/LippInc/offstage-windows/actions/workflows/ci.yml)
+
 **Run your Electron and Playwright GUI tests on Windows without them ever touching your screen.**
 
 Automated runs of a desktop app open real windows: end-to-end tests, screenshot scripts, smoke tests of the packaged app. On Windows those windows pop up on your screen and take your keyboard focus while you work. When a coding agent runs your tests, that happens all day. On Linux you would reach for `xvfb-run`. Windows has had the pieces for decades (hidden desktops, `CreateDesktop`), but nothing you could put in front of a test command.
@@ -170,7 +172,7 @@ The compiled helper is found again by its file name, so keep its folder one that
 
 ## Measured
 
-Tested on Windows 11 (build 26200), Node 24, Electron 44.3 and Playwright 1.63. Windows 10 uses the same APIs but is untested.
+Tested on Windows 11 (build 26200), Node 24, Electron 44.3 and Playwright 1.63. The self-test also passes on every push on GitHub's `windows-latest` runner (Windows Server 2025), where the helper adds about 40 ms per launch. Windows 10 uses the same APIs but is untested.
 
 - **Two Electron apps in daily development**, each with 31 e2e tests and 38 app launches per run: all passed offstage, and a watcher on the visible desktop saw none of their windows. Screenshot checks of 887 and 155 steps also passed, as did packaged-app smoke tests.
 - **A probe app offstage:** GPU compositing on, animations at full frame rate, timers unthrottled, `capturePage` and CDP screenshots with the page's real pixels, `document.hasFocus()` true.
