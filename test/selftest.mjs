@@ -16,7 +16,7 @@ import {
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { startWatcher, tools } from './tools.mjs'
@@ -121,7 +121,7 @@ await check('a window opened offstage stays offstage (and offstage counted it)',
 })
 
 await check(
-  'exit codes pass through; 127 for a missing program (helper and wrapper), 124 after --timeout',
+  'exit codes pass through; 127 for a missing program (helper and wrapper), 124 after --timeout, and not before it',
   async () => {
     const seven = spawnSync(helper, ['--', comspec, '/d', '/c', 'exit 7']).status
     const zero = spawnSync(helper, ['--', comspec, '/d', '/c', 'exit 0']).status
@@ -129,11 +129,13 @@ await check(
     const wrapperMissing = spawnSync(node, [offstageModule, 'no-such-command-offstage', 'x'], {
       encoding: 'utf8',
     }).status
+    // Both bounds: a timeout that fires early (a unit slip) is as wrong as one that fires late.
     const started = Date.now()
-    const timedOut = spawnSync(helper, ['--timeout', '1', '--', node, '-e', 'setTimeout(() => {}, 30000)'], {
+    const timedOut = spawnSync(helper, ['--timeout', '2', '--', node, '-e', 'setTimeout(() => {}, 30000)'], {
       encoding: 'utf8',
     })
     const elapsed = Date.now() - started
+    const tooLong = spawnSync(helper, ['--timeout', '3000000', '--', comspec, '/d', '/c', 'exit 0']).status
     return {
       ok:
         seven === 7 &&
@@ -141,8 +143,10 @@ await check(
         missing === 127 &&
         wrapperMissing === 127 &&
         timedOut.status === 124 &&
-        elapsed < 8000,
-      detail: `exit 7 -> ${seven}, exit 0 -> ${zero}, missing -> ${missing}, wrapper missing -> ${wrapperMissing}, timeout -> ${timedOut.status} after ${elapsed} ms`,
+        elapsed >= 1900 &&
+        elapsed < 6000 &&
+        tooLong === 125,
+      detail: `exit 7 -> ${seven}, exit 0 -> ${zero}, missing -> ${missing}, wrapper missing -> ${wrapperMissing}, --timeout 2 -> ${timedOut.status} after ${elapsed} ms, --timeout 3000000 -> ${tooLong}`,
     }
   },
 )
@@ -203,9 +207,11 @@ const LEAVE_ONE_RUNNING = `const child = require('node:child_process').spawn(pro
   child.unref(); console.log(child.pid)`
 
 await check(
-  'what the command leaves running is stopped; --keep-orphans leaves it running, and its own code runs',
+  'what the command leaves running is stopped (within the 2 s grace); --keep-orphans leaves it running, and its own code runs',
   async () => {
+    const stoppedFrom = Date.now()
     const stopped = spawnSync(helper, ['--', node, '-e', LEAVE_ONE_RUNNING], { encoding: 'utf8' })
+    const stoppedMs = Date.now() - stoppedFrom
     const stoppedPid = Number(stopped.stdout.trim())
     // The kept process writes a marker from its own code half a second in. One that died while still starting up (its
     // desktop gone before it attached: 4 of 5 kept processes before the helper handed them the desktop, 2026-09-23) never
@@ -222,8 +228,13 @@ await check(
     if (keptAlive) process.kill(keptPid)
     return {
       ok:
-        stopped.status === 0 && !alive(stoppedPid) && /stopped 1 process/.test(stopped.stderr) && keptAlive && keptRan,
-      detail: `stopped: pid ${stoppedPid} alive ${alive(stoppedPid)}, said ${JSON.stringify(stopped.stderr.trim())}; kept: pid ${keptPid} alive ${keptAlive} 2 s later, its own code ran ${keptRan}`,
+        stopped.status === 0 &&
+        !alive(stoppedPid) &&
+        /stopped 1 process/.test(stopped.stderr) &&
+        stoppedMs < 8000 &&
+        keptAlive &&
+        keptRan,
+      detail: `stopped: pid ${stoppedPid} alive ${alive(stoppedPid)} after a ${stoppedMs} ms run, said ${JSON.stringify(stopped.stderr.trim())}; kept: pid ${keptPid} alive ${keptAlive} 2 s later, its own code ran ${keptRan}`,
     }
   },
 )
@@ -272,12 +283,16 @@ await check(
 )
 
 await check('ten runs at once each get a desktop of their own', async () => {
+  const reports = mkdtempSync(join(tmpdir(), 'offstage-reports-'))
   const runs = await Promise.all(
     Array.from(
       { length: 10 },
       () =>
         new Promise((resolve) => {
-          const run = spawn(helper, ['--', probeWindow, '1500'], { stdio: ['ignore', 'pipe', 'pipe'] })
+          const run = spawn(helper, ['--', probeWindow, '1500'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, OFFSTAGE_REPORT_DIR: reports },
+          })
           let out = ''
           run.stdout.on('data', (data) => (out += data))
           run.on('close', (code) => {
@@ -293,9 +308,17 @@ await check('ten runs at once each get a desktop of their own', async () => {
     ),
   )
   const desktops = new Set(runs.map((run) => run.desktop))
+  // One report per run: runs at the same moment must not overwrite each other's.
+  const reported = new Set(
+    readdirSync(reports).map((file) => JSON.parse(readFileSync(join(reports, file), 'utf8')).desktop),
+  )
+  rmSync(reports, { recursive: true, force: true })
   return {
-    ok: runs.every((run) => run.code === 0 && run.desktop.startsWith('offstage-')) && desktops.size === 10,
-    detail: `exit codes ${[...new Set(runs.map((run) => run.code))]}, ${desktops.size} distinct desktops`,
+    ok:
+      runs.every((run) => run.code === 0 && run.desktop.startsWith('offstage-')) &&
+      desktops.size === 10 &&
+      reported.size === 10,
+    detail: `exit codes ${[...new Set(runs.map((run) => run.code))]}, ${desktops.size} distinct desktops, ${reported.size} distinct reports`,
   }
 })
 
@@ -408,6 +431,11 @@ await check(
       join(work, 'node_modules', '.bin', 'echo-args.cmd'),
       '@ECHO off\r\nnode "%~dp0\\..\\..\\echo-args.cjs" %*\r\n',
     )
+    // npm also writes an extensionless sh shim beside each .cmd; the wrapper must still pick the .cmd.
+    writeFileSync(
+      join(work, 'node_modules', '.bin', 'echo-args'),
+      '#!/bin/sh\nexec node "$basedir/../../echo-args.cjs" "$@"\n',
+    )
     const env = { ...process.env, PATH: `${join(work, 'node_modules', '.bin')};${process.env.PATH}` }
     const tricky = [
       'plain',
@@ -419,6 +447,8 @@ await check(
       'paren(x)',
       'bang!x',
       'trailing\\',
+      'two trailing\\\\',
+      'two\\\\"before a quote',
       'lt<gt>',
       'pipe|x',
       '',
@@ -532,9 +562,9 @@ await check(
 )
 
 await check(
-  'the CLI passes its options through a .cmd (timeout, verbose), and runs the command visibly when the helper cannot run',
+  "the CLI passes its options through a .cmd (timeout, verbose), keeps Playwright's report closed, and runs the command visibly (saying what it drops) when the helper cannot run",
   async () => {
-    const work = mkdtempSync(join(tmpdir(), 'offstage-wrap-'))
+    const work = mkdtempSync(join(tmpdir(), 'offstage wrap '))
     const sleeper = join(work, 'sleep-30.cmd')
     writeFileSync(sleeper, `@"${node}" -e "setTimeout(() => {}, 30000)"\r\n`)
     const quick = join(work, 'exit-0.cmd')
@@ -544,11 +574,24 @@ await check(
     const seconds = (Date.now() - started) / 1000
     const verbose = spawnSync(node, [offstageModule, '--verbose', quick], { encoding: 'utf8', timeout: 60_000 })
     const cache = mkdtempSync(join(tmpdir(), 'offstage-cache-'))
-    const blocked = spawnSync(node, [offstageModule, node, '-e', 'process.exit(3)'], {
+    const blocked = spawnSync(node, [offstageModule, '--timeout', '30', node, '-e', 'process.exit(3)'], {
       encoding: 'utf8',
       timeout: 60_000,
       env: envWith({ OFFSTAGE_CACHE: cache, ComSpec: join(cache, 'missing', 'cmd.exe') }),
     })
+    // A wrapped run keeps Playwright's HTML report from opening a browser offstage, unless the caller chose otherwise.
+    const reportOpen = (value) => {
+      const env = envWith(value ? { PLAYWRIGHT_HTML_OPEN: value } : {})
+      if (!value)
+        for (const name of Object.keys(env))
+          if (/^(PLAYWRIGHT_HTML_OPEN|PW_TEST_HTML_REPORT_OPEN)$/i.test(name)) delete env[name]
+      return spawnSync(node, [offstageModule, node, '-e', 'console.log(process.env.PLAYWRIGHT_HTML_OPEN)'], {
+        encoding: 'utf8',
+        env,
+      }).stdout.trim()
+    }
+    const openDefault = reportOpen('')
+    const openChosen = reportOpen('always')
     rmSync(work, { recursive: true, force: true })
     rmSync(cache, { recursive: true, force: true })
     return {
@@ -558,8 +601,10 @@ await check(
         /offstage: desktop offstage-\S+; 0 windows opened there/.test(verbose.stderr) &&
         verbose.status === 0 &&
         blocked.status === 3 &&
-        /the helper was built but does not run/.test(blocked.stderr),
-      detail: `--timeout 1 on a .cmd: exit ${timed.status} after ${seconds.toFixed(1)} s; --verbose on a .cmd: exit ${verbose.status}, ${JSON.stringify(verbose.stderr.trim())}; helper blocked: exit ${blocked.status}, said ${JSON.stringify(blocked.stderr.trim())}`,
+        /the helper was built but does not run .*--timeout is not applied/.test(blocked.stderr) &&
+        openDefault === 'never' &&
+        openChosen === 'always',
+      detail: `--timeout 1 on a .cmd: exit ${timed.status} after ${seconds.toFixed(1)} s; --verbose on a .cmd: exit ${verbose.status}, ${JSON.stringify(verbose.stderr.trim())}; helper blocked: exit ${blocked.status}, said ${JSON.stringify(blocked.stderr.trim())}; PLAYWRIGHT_HTML_OPEN in a wrapped run: ${openDefault} (unset), ${openChosen} (set to always)`,
     }
   },
 )
@@ -662,6 +707,163 @@ await check("without Playwright's loader, electronLaunchOptions says so and leav
     detail: `returned ${run.stdout.trim()}, said ${JSON.stringify(run.stderr.trim())}`,
   }
 })
+
+await check(
+  'spawnArgs and electronLaunchOptions pass their options on: the flags, a desktop of its own, the stand-in variables',
+  async () => {
+    const app = 'C:\\app folder\\app.exe'
+    const [file, args] = offstage.spawnArgs(app, ['a'], { timeout: 5, waitForAll: true, keepOrphans: true })
+    const [, named] = offstage.spawnArgs(app, [], { desktop: 'Default' })
+    const launch = offstage.electronLaunchOptions({ executablePath: app, args: ['.'] })
+    const ok =
+      file === helper &&
+      isDeepStrictEqual(args, ['--timeout', '5', '--wait-all', '--keep-orphans', '--own-desktop', '--', app, 'a']) &&
+      isDeepStrictEqual(named, ['--desktop', 'Default', '--', app]) &&
+      launch.executablePath === helper &&
+      isDeepStrictEqual(launch.args, ['.']) &&
+      launch.env.OFFSTAGE_EXEC === app &&
+      launch.env.OFFSTAGE_EXEC_PREPEND === '' &&
+      launch.env.OFFSTAGE_OWN_DESKTOP === '1' &&
+      Object.keys(launch.env).length === Object.keys(process.env).length + 3 &&
+      !offstage.enabled({ OFFSTAGE: 'no' }) &&
+      !offstage.enabled({ OFFSTAGE: ' Off ' }) &&
+      offstage.enabled({})
+    return {
+      ok,
+      detail: `spawnArgs -> ${JSON.stringify(args)}; with a desktop -> ${JSON.stringify(named)}; electronLaunchOptions -> OFFSTAGE_EXEC ${launch.env.OFFSTAGE_EXEC}, OFFSTAGE_OWN_DESKTOP ${launch.env.OFFSTAGE_OWN_DESKTOP}, ${Object.keys(launch.env).length} variables for ${Object.keys(process.env).length} here`,
+    }
+  },
+)
+
+await check(
+  'the CLI passes --wait-all, --keep-orphans and --verbose on, for a program and for a .cmd; cmd.exe builtins run',
+  async () => {
+    const work = mkdtempSync(join(tmpdir(), 'offstage cli '))
+    // A program that hands over to a successor living 5 s, and one that leaves a child running for good.
+    const handOver = `require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { detached: true, stdio: 'ignore' }).unref()`
+    const keepOne = `const c = require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { detached: true, stdio: 'ignore' }); c.unref(); console.log(c.pid)`
+    const handOverCmd = join(work, 'hand-over.cmd')
+    writeFileSync(handOverCmd, `@"${node}" -e "${handOver}"\r\n`)
+    const keepOneCmd = join(work, 'keep-one.cmd')
+    writeFileSync(keepOneCmd, `@"${node}" -e "${keepOne}"\r\n`)
+    const timed = (args) => {
+      const started = Date.now()
+      const run = spawnSync(node, [offstageModule, ...args], { encoding: 'utf8', timeout: 30_000 })
+      return { ...run, ms: Date.now() - started }
+    }
+    const waitedExe = timed(['--wait-all', '--verbose', node, '-e', handOver])
+    const waitedCmd = timed(['--wait-all', handOverCmd])
+    const keptExe = timed(['--keep-orphans', node, '-e', keepOne])
+    const keptCmd = timed(['--keep-orphans', keepOneCmd])
+    const builtin = spawnSync(node, [offstageModule, 'echo', 'from cmd'], { encoding: 'utf8' })
+    await sleep(500)
+    const keptPids = [keptExe, keptCmd].map((run) => Number(String(run.stdout).trim()))
+    const keptAlive = keptPids.map((pid) => pid > 0 && alive(pid))
+    for (const pid of keptPids) if (pid > 0 && alive(pid)) process.kill(pid)
+    rmSync(work, { recursive: true, force: true })
+    return {
+      ok:
+        waitedExe.status === 0 &&
+        waitedExe.ms >= 4500 &&
+        /offstage: desktop offstage-\S+/.test(waitedExe.stderr) &&
+        waitedCmd.status === 0 &&
+        waitedCmd.ms >= 4500 &&
+        keptExe.status === 0 &&
+        keptCmd.status === 0 &&
+        keptAlive.every(Boolean) &&
+        builtin.status === 0 &&
+        // cmd.exe's echo prints its arguments as it gets them, quotes included.
+        builtin.stdout.includes('from cmd'),
+      detail: `--wait-all: program ${waitedExe.ms} ms (exit ${waitedExe.status}, verbose ${/offstage: desktop/.test(waitedExe.stderr)}), .cmd ${waitedCmd.ms} ms (exit ${waitedCmd.status}); --keep-orphans kept alive: program ${keptAlive[0]}, .cmd ${keptAlive[1]} (exits ${keptExe.status}, ${keptCmd.status}); echo -> ${JSON.stringify(builtin.stdout.trim())}`,
+    }
+  },
+)
+
+await check(
+  'the helper runs from a folder whose path has spaces, and stands in for a program whose path has spaces',
+  async () => {
+    const top = mkdtempSync(join(tmpdir(), 'offstage spaced '))
+    const folder = join(top, 'helper copy')
+    mkdirSync(folder)
+    const copied = join(folder, 'offstage helper.exe')
+    writeFileSync(copied, readFileSync(helper))
+    const target = join(folder, 'who am i.exe')
+    writeFileSync(target, readFileSync(join(process.env.SystemRoot, 'System32', 'whoami.exe')))
+    // libuv quotes a program path that has a space, so the helper reads a quoted program name from its command line here.
+    const direct = spawnSync(copied, ['--', comspec, '/d', '/c', 'echo %OFFSTAGE_DESKTOP%'], { encoding: 'utf8' })
+    const standIn = spawnSync(copied, [], { encoding: 'utf8', env: { ...process.env, OFFSTAGE_EXEC: target } })
+    rmSync(top, { recursive: true, force: true, maxRetries: 5 })
+    return {
+      ok:
+        direct.status === 0 &&
+        direct.stdout.trim().startsWith('offstage-') &&
+        standIn.status === 0 &&
+        standIn.stdout.trim().length > 0,
+      detail: `run from a spaced path: exit ${direct.status}, ${JSON.stringify(direct.stdout.trim())}; standing in for a spaced path: exit ${standIn.status}, ${JSON.stringify(standIn.stdout.trim())}${direct.stderr || standIn.stderr ? `; said ${JSON.stringify(`${direct.stderr}${standIn.stderr}`.trim())}` : ''}`,
+    }
+  },
+)
+
+await check(
+  'a stand-in stops its app when the process that started it through cmd.exe is killed (as Playwright starts it)',
+  async () => {
+    const work = mkdtempSync(join(tmpdir(), 'offstage-launcher-'))
+    const pidFile = join(work, 'app.pid')
+    const appFile = join(work, 'app.cjs')
+    writeFileSync(
+      appFile,
+      `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 120000)`,
+    )
+    // Playwright 1.45 and later start Electron with shell: true on Windows, so the helper is cmd.exe's child, outside the
+    // kill-on-close job Node keeps for its own children.
+    const launcher = `require('node:child_process').spawn(${JSON.stringify(`"${helper}" "${appFile}"`)}, {
+        shell: true, stdio: 'ignore', env: { ...process.env, OFFSTAGE_EXEC: process.execPath } });
+      setTimeout(() => {}, 120000)`
+    const run = spawn(node, ['-e', launcher], { stdio: 'ignore' })
+    let appPid = 0
+    for (let i = 0; i < 150 && !appPid; i++) {
+      await sleep(100)
+      if (existsSync(pidFile)) appPid = Number(readFileSync(pidFile, 'utf8'))
+    }
+    const before = appPid > 0 && alive(appPid)
+    run.kill()
+    await sleep(2000)
+    const after = appPid > 0 && alive(appPid)
+    if (after) process.kill(appPid)
+    rmSync(work, { recursive: true, force: true, maxRetries: 5 })
+    return {
+      ok: before && !after,
+      detail: `app pid ${appPid}: alive while its launcher ran ${before}; 2 s after the launcher was killed ${after}`,
+    }
+  },
+)
+
+await check(
+  'the helper is cached in %LOCALAPPDATA%\\offstage and reused by the next process, not rebuilt',
+  async () => {
+    const local = mkdtempSync(join(tmpdir(), 'offstage-localappdata-'))
+    const env = envWith({ LOCALAPPDATA: local })
+    for (const name of Object.keys(env)) if (name.toUpperCase() === 'OFFSTAGE_CACHE') delete env[name]
+    const ask = `const o = require(${JSON.stringify(offstageModule)}); const p = o.helper();
+    console.log(JSON.stringify({ p, mtime: require('node:fs').statSync(p).mtimeMs }))`
+    const first = spawnSync(node, ['-e', ask], { encoding: 'utf8', env })
+    const second = spawnSync(node, ['-e', ask], { encoding: 'utf8', env })
+    rmSync(local, { recursive: true, force: true, maxRetries: 5 })
+    let a = null
+    let b = null
+    try {
+      a = JSON.parse(first.stdout)
+      b = JSON.parse(second.stdout)
+    } catch {
+      // Left null: the check fails and the detail shows the output.
+    }
+    const expected = join(local, 'offstage', basename(helper))
+    return {
+      ok: a?.p === expected && b?.p === expected && b.mtime === a.mtime,
+      detail: `first ${a?.p ?? first.stdout + first.stderr}, second ${b?.p ?? second.stdout + second.stderr} (expected ${expected}); rebuilt: ${a && b ? b.mtime !== a.mtime : 'unknown'}`,
+    }
+  },
+)
 
 const failed = results.filter((result) => !result.ok).length
 console.log(`\n${results.length - failed} of ${results.length} checks passed`)

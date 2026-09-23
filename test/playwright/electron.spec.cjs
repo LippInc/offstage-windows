@@ -16,7 +16,11 @@ test('electronLaunchOptions starts Electron offstage, with Playwright loader in 
     expect(await app.evaluate(() => typeof globalThis.__playwright_run)).toBe('function')
     // The helper's own variables never reach the app.
     expect(
-      await app.evaluate(() => Object.keys(process.env).filter((key) => /^OFFSTAGE_(EXEC|EXEC_PREPEND)$/i.test(key))),
+      await app.evaluate(() =>
+        Object.keys(process.env).filter((key) =>
+          /^OFFSTAGE_(EXEC|EXEC_PREPEND|OWN_DESKTOP|TIMEOUT|WAIT_ALL|KEEP_ORPHANS)$/i.test(key),
+        ),
+      ),
     ).toEqual([])
     const field = page.getByLabel('Field')
     await field.click()

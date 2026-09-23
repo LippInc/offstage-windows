@@ -10,21 +10,22 @@ export declare function enabled(env?: Record<string, string | undefined>): boole
 export declare function helper(): string
 
 /**
- * Options for Playwright's `_electron.launch()` that start the app offstage (the helper stands in as the executable).
- * Returns the options unchanged when offstage is off or cannot run.
+ * Options for Playwright's `_electron.launch()` that start the app offstage (the helper stands in as the executable,
+ * so the result also carries `executablePath` and `env`). Returns the options unchanged when offstage is off or cannot
+ * run.
  */
-export declare function electronLaunchOptions<
-  T extends { executablePath?: string; cwd?: string; env?: Record<string, string | undefined> },
->(options?: T): T
+export declare function electronLaunchOptions<T extends object = {}>(
+  options?: T & { executablePath?: string; cwd?: string; env?: { [key: string]: string | undefined } },
+): T & { executablePath?: string; env?: { [key: string]: string } }
 
 /**
  * `[command, args]` for child_process.spawn or execFile that run `file args` offstage; unchanged when offstage is off.
  * What the program leaves running when it exits is stopped after a moment, unless `waitForAll` (wait for the whole tree:
- * an app that restarts itself or hands over) or `keepOrphans` (leave it). `timeout` is in seconds. `desktop` runs it on
- * an app's desktop (the app's OFFSTAGE_DESKTOP) instead of a new one, for a helper that works with the app's windows by
- * handle: from any other desktop the handle reads as an empty, hidden window.
+ * an app that restarts itself or hands over) or `keepOrphans` (leave it). `timeout` is in whole seconds. `desktop` runs
+ * it on an app's desktop (the app's OFFSTAGE_DESKTOP) instead of a new one, for a helper that works with the app's
+ * windows by handle: from any other desktop the handle reads as an empty, hidden window.
+ * Throws a TypeError when `desktop` is not a desktop's name (letters, digits, `_`, `.`, `-`).
  */
-/** Throws a TypeError when `desktop` is not a desktop's name (letters, digits, `_`, `.`, `-`). */
 export declare function spawnArgs(
   file: string,
   args?: readonly string[],

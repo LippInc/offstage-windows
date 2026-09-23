@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict'
-// offstage-windows 0.1.0 (MIT; offstage-windows on npm and GitHub): runs the windows of automated desktop-app sessions
+// offstage-windows 0.1.1 (MIT; offstage-windows on npm and GitHub): runs the windows of automated desktop-app sessions
 // (Electron e2e, CDP screenshot scripts, packaged smoke tests) on a hidden Windows desktop, so nothing flashes on screen
 // and nothing steals focus.
 //
@@ -36,7 +36,8 @@ const HELPER_SOURCE = String.raw`// offstage: runs a command on a hidden desktop
 //   OFFSTAGE_EXEC=<exe> [OFFSTAGE_EXEC_PREPEND=<args>] offstage.exe <args>
 //       Stand-in mode: runs "<exe> <prepend> <args>" the same way, for tools that start one executable themselves
 //       (Playwright's executablePath). Every argument is the target's, so the options come from OFFSTAGE_TIMEOUT,
-//       OFFSTAGE_WAIT_ALL, OFFSTAGE_KEEP_ORPHANS, OFFSTAGE_OWN_DESKTOP and OFFSTAGE_VERBOSE.
+//       OFFSTAGE_WAIT_ALL, OFFSTAGE_KEEP_ORPHANS, OFFSTAGE_OWN_DESKTOP and OFFSTAGE_VERBOSE. The run also ends when the
+//       process that started the helper does.
 //
 // The command inherits this process's standard handles, environment and working directory, plus OFFSTAGE_DESKTOP (the
 // desktop's name). Started from a process that already runs offstage, it uses that desktop instead of making another,
@@ -186,13 +187,19 @@ static class Offstage
             if (desktopArgument != IntPtr.Zero) Marshal.FreeHGlobal(desktopArgument);
         }
         bool tracked = AssignProcessToJobObject(job, process.hProcess);
-        if (!tracked && options.Verbose)
-            Console.Error.WriteLine("offstage: the command runs outside a job object (" + LastError() + "), so what it leaves running is not stopped");
+        if (!tracked)
+            Console.Error.WriteLine("offstage: the command runs outside a job object (" + LastError() + "), so what it leaves running is not stopped, and stopping offstage does not stop it");
         ResumeThread(process.hThread);
         CloseHandle(process.hThread);
 
         controlHandler = OnConsoleControl;
         SetConsoleCtrlHandler(controlHandler, true);
+
+        // A stand-in is the executable a tool started (Playwright's executablePath), and such a tool never wants the app
+        // to outlive it. Playwright on Windows starts it through cmd.exe, whose children leave Node's own kill-on-close
+        // job, so a test worker that is killed outright would leave the app running on a desktop no one can see: the run
+        // ends when the process that started the helper does.
+        if (!string.IsNullOrEmpty(target)) WatchParent();
 
         IntPtr censusDesktop = hidden != IntPtr.Zero ? hidden : ownDesktop;
         noteWindow = NoteWindow;
@@ -380,6 +387,31 @@ static class Offstage
         }
         if (ownJob != IntPtr.Zero) TerminateJobObject(ownJob, ExitInterrupted);
         return false;
+    }
+
+    static void WatchParent()
+    {
+        PROCESS_BASIC_INFORMATION basic = new PROCESS_BASIC_INFORMATION();
+        int returned;
+        if (NtQueryInformationProcess(GetCurrentProcess(), 0, ref basic, Marshal.SizeOf(typeof(PROCESS_BASIC_INFORMATION)), out returned) != 0) return;
+        IntPtr parent = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)basic.InheritedFromUniqueProcessId.ToInt64());
+        if (parent == IntPtr.Zero) return;
+        // The id may already belong to a newer process: only a parent that started before this process counts.
+        long parentStart, ownStart, unused;
+        if (!GetProcessTimes(parent, out parentStart, out unused, out unused, out unused) ||
+            !GetProcessTimes(GetCurrentProcess(), out ownStart, out unused, out unused, out unused) || parentStart > ownStart)
+        {
+            CloseHandle(parent);
+            return;
+        }
+        Thread watch = new Thread(delegate ()
+        {
+            WaitForSingleObject(parent, INFINITE);
+            IntPtr ownJob = job;
+            if (ownJob != IntPtr.Zero) TerminateJobObject(ownJob, ExitInterrupted);
+        });
+        watch.IsBackground = true;
+        watch.Start();
     }
 
     static bool NoteWindow(IntPtr window, IntPtr unused)
@@ -676,6 +708,7 @@ static class Offstage
     const uint WAIT_TIMEOUT = 0x102;
     const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     const uint PROCESS_DUP_HANDLE = 0x40;
+    const uint SYNCHRONIZE = 0x00100000;
     const uint DESKTOP_READOBJECTS = 0x1;
     const int ERROR_FILE_NOT_FOUND = 2;
     const int ERROR_PATH_NOT_FOUND = 3;
@@ -704,6 +737,12 @@ static class Offstage
     {
         public IntPtr hProcess, hThread;
         public int dwProcessId, dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr ExitStatus, PebBaseAddress, AffinityMask, BasePriority, UniqueProcessId, InheritedFromUniqueProcessId;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -756,6 +795,8 @@ static class Offstage
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref PROCESS_BASIC_INFORMATION info, int length, out int returned);
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr process, int flags, StringBuilder path, ref int size);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetConsoleCtrlHandler(ConsoleCtrlHandler handler, bool add);
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateDesktopW(string name, IntPtr device, IntPtr devmode, uint flags, uint access, IntPtr attributes);
@@ -788,10 +829,19 @@ function enabled(env = process.env) {
 
 // Each distinct reason once: an early, unrelated warning must not hide a later one.
 const warned = new Set()
-function warnOnce(message) {
+function warnOnce(message, outcome = 'windows will show on screen') {
   if (warned.has(message)) return
   warned.add(message)
-  process.stderr.write(`offstage: ${message}; windows will show on screen\n`)
+  process.stderr.write(`offstage: ${message}; ${outcome}\n`)
+}
+
+// What falling back to visible windows also drops, said once with the reason: without the helper there is no timeout and
+// no waiting for the whole tree.
+function fallbackOutcome(dropped) {
+  const names = dropped.filter(Boolean)
+  return names.length === 0
+    ? undefined
+    : `windows will show on screen, and ${names.join(' and ')} ${names.length > 1 ? 'are' : 'is'} not applied`
 }
 
 let helperFailure = null
@@ -841,10 +891,17 @@ function buildHelper() {
     if (trial.status !== 0) {
       throw new Error(`the helper was built but does not run (${trial.error?.code ?? `exit ${trial.status}`})`)
     }
-    try {
-      fs.renameSync(`${stem}.exe`, exe)
-    } catch (error) {
-      if (!fs.existsSync(exe)) throw error
+    // Another process may have put its own build in place meanwhile (then that one is used), and an antivirus scanning
+    // the new file can hold it for a moment: a few short retries before this process gives up on offstage.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        fs.renameSync(`${stem}.exe`, exe)
+        break
+      } catch (error) {
+        if (fs.existsSync(exe)) break
+        if (attempt === 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+      }
     }
   } finally {
     // Best effort: a file another process still holds must not turn a good build, or a clear error, into a crash.
@@ -914,15 +971,22 @@ function electronLaunchOptions(options = {}) {
  * Automation) must share their desktop, where the handle is valid.
  * Only stdin, stdout and stderr reach the program (no IPC channel, no --remote-debugging-pipe). The helper is a console
  * program: spawn it with `windowsHide: true` if the calling process may have no console of its own (a GUI tool).
- * `file` is a program (.exe); a .cmd or .bat goes through the command-line wrapper, which escapes for cmd.exe.
+ * `file` is a program (.exe). A .cmd or .bat is refused and returned unchanged: run those through the command-line
+ * wrapper, which escapes for cmd.exe. When the helper cannot run, the program starts as is, without timeout or waitForAll.
  */
 function spawnArgs(file, args = [], { waitForAll = false, keepOrphans = false, timeout = 0, desktop = '' } = {}) {
   // A wrong desktop is the caller's mistake, never a reason to fall back: a helper on another desktop reads wrong answers.
   if (desktop && !/^[\w.-]+$/.test(desktop))
     throw new TypeError(`desktop takes a desktop's name, not ${JSON.stringify(desktop)}`)
   if (!enabled()) return [file, [...args]]
+  if (/\.(cmd|bat)$/i.test(file)) {
+    warnOnce(
+      `spawnArgs runs programs, not ${path.basename(file)}`,
+      'it is returned unchanged (run it through the CLI instead)',
+    )
+    return [file, [...args]]
+  }
   try {
-    if (/\.(cmd|bat)$/i.test(file)) throw new Error(`spawnArgs runs programs, not ${path.basename(file)}; use the CLI`)
     if (!Number.isInteger(timeout) || timeout < 0)
       throw new Error(`timeout takes a whole number of seconds, not ${timeout}`)
     const flags = [
@@ -933,7 +997,7 @@ function spawnArgs(file, args = [], { waitForAll = false, keepOrphans = false, t
     ]
     return [helper(), [...flags, '--', file, ...args]]
   } catch (error) {
-    warnOnce(error.message)
+    warnOnce(error.message, fallbackOutcome([timeout && 'timeout', waitForAll && 'waitForAll']))
     return [file, [...args]]
   }
 }
@@ -969,14 +1033,30 @@ function playwrightElectronLoader(cwd) {
 
 // One argument, quoted for the C runtime's parser (how Windows programs split their command line).
 function quote(argument) {
-  if (argument !== '' && !/[\s"]/.test(argument)) return argument
-  return `"${argument.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`
+  return argument !== '' && !/[\s"]/.test(argument) ? argument : quoted(argument)
+}
+
+// One argument in quotes, by the C runtime's rules: the backslashes before a quote, and before the closing quote, are
+// doubled and the quote is escaped; every other backslash stays as it is.
+function quoted(argument) {
+  let text = '"'
+  let backslashes = 0
+  for (const c of argument) {
+    if (c === '\\') {
+      backslashes++
+      continue
+    }
+    text += '\\'.repeat(c === '"' ? backslashes * 2 + 1 : backslashes) + c
+    backslashes = 0
+  }
+  return `${text}${'\\'.repeat(backslashes * 2)}"`
 }
 
 // Windows resolution for the command-line wrapper, as cross-spawn does it: an .exe or .com runs directly; anything else
 // (.cmd shims, .bat) runs through cmd.exe with its metacharacters escaped, twice for node_modules/.bin shims, which hand
-// their arguments to cmd.exe a second time. The escaping below is adapted from cross-spawn (lib/util/escape.js),
-// Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio>, MIT License.
+// their arguments to cmd.exe a second time. The metacharacters and the rule for shims follow cross-spawn
+// (lib/util/escape.js), Copyright (c) 2018 Made With MOXY Lda <hello@moxy.studio>, MIT License; the quoting inside is
+// quoted() above, since cross-spawn's regular expressions mishandle two or more backslashes before a quote.
 const CMD_METACHARACTERS = /([()\][%!^"`<>&|;, *?])/g
 
 function findExecutable(command, cwd) {
@@ -1006,8 +1086,7 @@ function findExecutable(command, cwd) {
 }
 
 function cmdArgument(argument, twice) {
-  let escaped = `"${argument.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"').replace(/(?=(\\+?)?)\1$/, '$1$1')}"`
-  escaped = escaped.replace(CMD_METACHARACTERS, '^$1')
+  const escaped = quoted(argument).replace(CMD_METACHARACTERS, '^$1')
   return twice ? escaped.replace(CMD_METACHARACTERS, '^$1') : escaped
 }
 
@@ -1075,7 +1154,7 @@ function main(argv) {
     try {
       exe = helper()
     } catch (error) {
-      warnOnce(error.message)
+      warnOnce(error.message, fallbackOutcome([options.timeout && '--timeout', options.waitAll && '--wait-all']))
     }
   }
   if (process.platform !== 'win32') return run(command, args, {})
@@ -1089,6 +1168,12 @@ function main(argv) {
       ? run(invocation.file, invocation.args, {})
       : run(invocation.shell, [invocation.line], { windowsVerbatimArguments: true })
   }
+  // A browser opened from the hidden desktop could not be seen (and a browser the user starts meanwhile would join it
+  // there), so Playwright's HTML report is not opened automatically unless the caller asks for it.
+  const env =
+    process.env.PLAYWRIGHT_HTML_OPEN || process.env.PW_TEST_HTML_REPORT_OPEN
+      ? process.env
+      : { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never' }
   if (invocation.file) {
     const flags = [
       ...(options.timeout ? ['--timeout', options.timeout] : []),
@@ -1096,12 +1181,12 @@ function main(argv) {
       ...(options.keepOrphans ? ['--keep-orphans'] : []),
       ...(options.verbose ? ['--verbose'] : []),
     ]
-    return run(exe, [...flags, '--', invocation.file, ...invocation.args], {})
+    return run(exe, [...flags, '--', invocation.file, ...invocation.args], { env })
   }
   // A cmd.exe line is passed through the environment: it must reach cmd.exe exactly as escaped, with no second quoting.
   return run(exe, [], {
     env: {
-      ...process.env,
+      ...env,
       OFFSTAGE_EXEC: invocation.shell,
       OFFSTAGE_EXEC_PREPEND: invocation.line,
       OFFSTAGE_TIMEOUT: options.timeout,

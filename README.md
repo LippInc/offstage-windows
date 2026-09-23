@@ -4,9 +4,9 @@
 
 **Run your Electron and Playwright GUI tests on Windows without them ever touching your screen.**
 
-Automated runs of a desktop app open real windows: end-to-end tests, screenshot scripts, smoke tests of the packaged app. On Windows those windows pop up on your screen and take your keyboard focus while you work. When a coding agent runs your tests, that happens all day. On Linux you would reach for `xvfb-run`. Windows has had the pieces for decades (hidden desktops, `CreateDesktop`), but nothing you could put in front of a test command.
+Automated runs of a desktop app open real windows: end-to-end tests, screenshot scripts, smoke tests of the packaged app. On Windows those windows pop up on your screen and take your keyboard focus while you work. When a coding agent runs your tests, that happens all day. On Linux you would reach for `xvfb-run`. Windows has had the pieces for decades: a program can create a hidden desktop (`CreateDesktop`) and start processes on it, and small launchers such as [RunHidden](https://github.com/meshko/RunHidden) (2013) do that for one program.
 
-offstage-windows runs those sessions on a hidden Windows desktop instead. The app renders as it does on screen (GPU, animations, focus, screenshots; timers too, with Chromium's anti-throttling switches below); you just never see it. Because each app launch can get a desktop and a focus of its own, GUI test runs can also go side by side on one machine without fighting over the keyboard.
+offstage-windows builds a test tool from those pieces. It runs the whole session on a hidden Windows desktop: the test runner and everything it starts, with their output and exit code kept, and what they leave running cleaned up. The app renders as it does on screen (GPU, animations, focus, screenshots; timers too, with Chromium's anti-throttling switches below); you just never see it. Because each app launch can get a desktop and a focus of its own, GUI test runs can also go side by side on one machine without fighting over the keyboard.
 
 - No changes to your app, and no VM, container or second login.
 - One file with no dependencies: it builds its small helper with the C# compiler that ships with Windows.
@@ -20,7 +20,7 @@ Wrap the command that runs your tests:
 npx offstage-windows npx playwright test
 ```
 
-or in `package.json`:
+or install it (`npm i -D offstage-windows`) and put it in `package.json`:
 
 ```json
 "scripts": {
@@ -30,11 +30,13 @@ or in `package.json`:
 
 Everything the command starts (the test runner, Electron, its helper processes) opens its windows on one hidden desktop. The run's output and exit code are the command's own. Ctrl+C reaches the command as before, and whatever is still running 10 s later is stopped. When the command exits, anything it left running is stopped.
 
+Playwright's HTML report does not open by itself in a wrapped run (offstage-windows sets `PLAYWRIGHT_HTML_OPEN=never` unless you set it): a browser started from the hidden desktop would open where you cannot see it. Open the report afterwards with `npx playwright show-report`.
+
 One desktop for the whole run is fine with one worker. For Playwright workers side by side, wire the launch (below), which gives each app its own desktop, wrapped or not.
 
 Don't wrap interactive runs (`--ui`, `--debug`, `page.pause()`, codegen): their windows would open where you cannot see them. Run those unwrapped, or with `OFFSTAGE=0`.
 
-To watch a run on screen again: `OFFSTAGE=0`.
+To watch a run on screen again, set `OFFSTAGE=0` (PowerShell: `$env:OFFSTAGE = '0'`; cmd: `set OFFSTAGE=0`).
 
 ## Wire it into your launch code
 
@@ -58,7 +60,7 @@ test('the app starts', async () => {
 })
 ```
 
-The helper stands in as the executable and starts Electron with Playwright's own loader in front, exactly as Playwright does when it resolves Electron itself. Each launch gets a desktop of its own, also inside a wrapped run.
+The helper stands in as the executable and starts Electron with Playwright's own loader in front, exactly as Playwright does when it resolves Electron itself. Each launch gets a desktop of its own, also inside a wrapped run. This relies on where Playwright keeps that loader (`playwright-core/lib/server/electron/loader.js`, the same from 1.30 to 1.63); if a release moves it, offstage-windows says so and the app launches visibly.
 
 **Scripts that spawn Electron or a packaged app** (CDP screenshot scripts, smoke tests):
 
@@ -75,8 +77,10 @@ const app = spawn(...spawnArgs(electronPath, ['.', '--remote-debugging-port=9222
 The spawned process stands for the app: the same exit code, and `kill()` stops the whole tree. The app gets a desktop of its own. The options:
 
 - `{ waitForAll: true }`: for an app that restarts itself (`app.relaunch()`) or hands over to another process. Otherwise the successor is stopped 2 s after the first process exits.
-- `{ keepOrphans: true }`: leaves what it started running.
+- `{ keepOrphans: true }`: leaves what it started running (a timeout still stops everything).
 - `{ timeout: <seconds> }`: stops the run after that long.
+
+These options only apply offstage: with `OFFSTAGE=0`, off Windows, or when the helper cannot run, the app starts as is.
 
 Only stdin, stdout and stderr reach the app: no Node IPC channel, no `--remote-debugging-pipe`. `spawnArgs` takes programs, not `.cmd` or `.bat` files; use the CLI for those.
 
@@ -84,7 +88,9 @@ Only stdin, stdout and stderr reach the app: no Node IPC channel, no `--remote-d
 
 ```js
 const { execFileSync } = require('node:child_process')
+const { spawnArgs } = require('offstage-windows')
 
+// inside an async test, with `app` from electron.launch():
 const desktop = await app.evaluate(() => process.env.OFFSTAGE_DESKTOP ?? '')
 const psArgs = ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript] // your helper
 const [file, args] = desktop ? spawnArgs('powershell.exe', psArgs, { desktop }) : ['powershell.exe', psArgs]
@@ -102,14 +108,14 @@ Keep Chromium's anti-throttling switches in automated launches. Otherwise a wind
 
 ## Run tests side by side
 
-Test runs no longer fight over the screen or the keyboard, so work that had to run one at a time can run together. Measured on two real Electron apps (Electron 44, Playwright 1.63, a 16-core laptop), in alternating pairs so that both variants saw the same load:
+Test runs no longer fight over the screen or the keyboard, so work that had to run one at a time can run together. Measured on two real Electron apps, A and B (Electron 44, Playwright 1.63, a 16-core laptop). The e2e rows ran in alternating pairs so that both variants saw the same load; the last two compare with timings of the old one-at-a-time way:
 
-| What                                                                      | One at a time | Side by side                |
-| ------------------------------------------------------------------------- | ------------- | --------------------------- |
-| e2e suite, 6 spec files                                                   | 62 s          | 26 s (3 Playwright workers) |
-| e2e suite, 2 spec files                                                   | 99-132 s      | 50-79 s (2 workers)         |
-| Build once, then e2e + screenshot check + packaged smoke at the same time | ~6 min        | 2.8 min                     |
-| 383 mutation tests, in 3 git worktrees                                    | ~73 min       | 26.6 min                    |
+| What                                                                             | One at a time | Side by side                |
+| -------------------------------------------------------------------------------- | ------------- | --------------------------- |
+| App A: e2e suite, 6 spec files                                                   | 62 s          | 26 s (3 Playwright workers) |
+| App B: e2e suite, 2 spec files                                                   | 99-132 s      | 50-79 s (2 workers)         |
+| App B: build once, then e2e + screenshot check + packaged smoke at the same time | ~6 min        | 2.8 min                     |
+| App B: 383 mutation tests, in 3 git worktrees                                    | ~73 min       | 26.6 min                    |
 
 What makes it safe:
 
@@ -131,7 +137,7 @@ Windows lets a program create extra desktops in the same session (`CreateDesktop
 
 It adds about 50-60 ms to each launch.
 
-If the helper cannot be built, or its first test run fails (no compiler, an application-control policy, a security product), offstage says so once and runs everything with visible windows, as before. If a security product starts blocking a helper that already ran, launches fail instead: `OFFSTAGE=0` runs them visibly until it is allowed again.
+If the helper cannot be built, or its first test run fails (no compiler, an application-control policy, a security product), offstage says so once and runs everything with visible windows, as before, and without `--timeout` or `--wait-all`, which need the helper (it says that too). If a security product starts blocking a helper that already ran, launches fail instead: `OFFSTAGE=0` runs them visibly until it is allowed again.
 
 ## Options and environment
 
@@ -141,8 +147,9 @@ offstage-windows --check
 ```
 
 - `--check` compiles the helper and runs a test command offstage.
-- The command is run the way an npm script would run it: `node_modules/.bin` shims included, their arguments escaped as cmd.exe needs.
+- The command is found the way cmd.exe finds it: the current folder, then PATH (inside an npm script or `npx`, PATH includes `node_modules/.bin`). `.cmd` and `.bat` files, npm's shims included, run through cmd.exe with their arguments escaped as it needs.
 - A command found neither in the current folder, on PATH, nor among cmd.exe's own commands exits 127.
+- The options only apply offstage: with `OFFSTAGE=0` or off Windows the command runs as is.
 
 | Variable                               | Effect                                                                                                                                                                                                  |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -151,6 +158,7 @@ offstage-windows --check
 | `OFFSTAGE_REPORT_DIR=<dir>`            | Writes one JSON report per run: desktop, exit code, windows opened, leftovers                                                                                                                           |
 | `OFFSTAGE_CACHE=<dir>`                 | Where the compiled helper is kept (default `%LOCALAPPDATA%\offstage`; a folder only you can write to)                                                                                                   |
 | `OFFSTAGE_DESKTOP`                     | Set for the program: the name of its desktop. A command started from inside a run with the CLI stays on that desktop; `spawnArgs` and `electronLaunchOptions` make a new one unless `desktop` names one |
+| `PLAYWRIGHT_HTML_OPEN`                 | Set to `never` for a wrapped command unless you set it (or `PW_TEST_HTML_REPORT_OPEN`): a report opened from the hidden desktop could not be seen                                                       |
 
 Exit codes of its own: 124 timed out (it then lists the windows open on its desktop, which is how a hidden native dialog shows up; an app launched with a desktop of its own is listed by its own run, for example in its `OFFSTAGE_REPORT_DIR` report), 125 offstage failed, 126 could not start, 127 not found.
 
@@ -166,7 +174,9 @@ Exit codes of its own: 124 timed out (it then lists the windows open on its desk
 
 ## Security software
 
-Some endpoint-protection products are wary of programs that create hidden desktops, and of programs compiled at run time. The helper is compiled on your machine, on first use, from the C# source inside `offstage.cjs`, which you can read. It makes no network connections, needs no administrator rights, and stays running only while its command runs. If Windows or a security product blocks it when it is built, offstage-windows prints why and your command runs with visible windows.
+Hidden desktops are also a malware technique: remote-access trojans use them for hidden VNC sessions (MITRE ATT&CK [T1564.003](https://attack.mitre.org/techniques/T1564/003/)), and compiling code on the machine with `csc.exe` is another technique defenders watch for ([T1027.004](https://attack.mitre.org/techniques/T1027/004/)). offstage-windows does both, in the open, to keep test windows off your screen. Expect some endpoint-protection products to flag or block it. On a managed machine your security team can see it too: Microsoft Defender for Endpoint records the desktop each process runs on.
+
+The helper is compiled on your machine, on first use, from the C# source inside `offstage.cjs`, which you can read. It makes no network connections, needs no administrator rights, and stays running only while its command runs. If Windows or a security product blocks it when it is built, offstage-windows prints why and your command runs with visible windows.
 
 The compiled helper is found again by its file name, so keep its folder one that only you can write to. The default, `%LOCALAPPDATA%\offstage`, is, also for services running as SYSTEM, which a shared temp folder is not. Set `OFFSTAGE_CACHE` only to such a folder.
 
@@ -183,7 +193,9 @@ Tested on Windows 11 (build 26200), Node 24, Electron 44.3 and Playwright 1.63. 
 - **`show: false` in test mode:** it changes your app, a hidden window does not take focus the way a real one does, and some things break or throttle. offstage-windows needs no change to the app.
 - **Moving windows off-screen:** they still take focus and flash in the taskbar.
 - **Windows virtual desktops (Win+Tab):** new windows open on the desktop you are looking at.
-- **A VM, Windows Sandbox or a second RDP session:** heavy to set up. Sandbox needs Pro and runs one instance at a time, and client Windows allows one RDP session.
+- **Sysinternals Desktops:** real separate desktops, but you switch between them by hand; it does not start a command on one.
+- **A VM, Windows Sandbox or a second login:** heavy to set up. Sandbox needs Windows Pro or higher and currently runs one instance at a time.
+- **Windows 11's agent workspace:** an experimental, off-by-default session for AI agents such as Copilot Actions, not a way to run your own test command.
 - **On Linux:** `xvfb-run` (or `xvfb-maybe`) already does this, and offstage-windows passes commands through there.
 - **On macOS:** see [viraatdas/offstage](https://github.com/viraatdas/offstage), which runs an agent's GUI work in a second macOS account, and [thesepehrm/offstage](https://github.com/thesepehrm/offstage), which runs background QA of macOS apps. They are independent projects with the same idea on Mac. This one is unrelated to the npm package `offstage` (an HTTP mocking library).
 
@@ -192,7 +204,7 @@ Tested on Windows 11 (build 26200), Node 24, Electron 44.3 and Playwright 1.63. 
 ```sh
 pnpm install
 pnpm check      # compile the helper and run a command offstage
-pnpm selftest   # 22 checks
+pnpm selftest   # 27 checks
 pnpm bench      # what the helper adds to one launch
 ```
 

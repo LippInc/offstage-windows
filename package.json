@@ -1,6 +1,6 @@
 {
   "name": "offstage-windows",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run automated GUI test sessions on Windows (Electron + Playwright e2e, CDP screenshot scripts, packaged-app smoke tests) on a hidden desktop: no windows on your screen, no stolen focus, and test runs that can go side by side.",
   "keywords": [
     "windows",
