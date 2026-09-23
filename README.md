@@ -30,7 +30,7 @@ or install it (`npm i -D offstage-windows`) and put it in `package.json`:
 
 Everything the command starts (the test runner, Electron, its helper processes) opens its windows on one hidden desktop. The run's output and exit code are the command's own. Ctrl+C reaches the command as before, and whatever is still running 10 s later is stopped. When the command exits, anything it left running is stopped.
 
-Playwright's HTML report does not open by itself in a wrapped run (offstage-windows sets `PLAYWRIGHT_HTML_OPEN=never` unless you set it): a browser started from the hidden desktop would open where you cannot see it. Open the report afterwards with `npx playwright show-report`.
+Playwright's HTML report does not open by itself in a wrapped run (offstage-windows sets `PLAYWRIGHT_HTML_OPEN=never`, and the older `PW_TEST_HTML_REPORT_OPEN`, unless you set either): a browser started from the hidden desktop would open where you cannot see it. Open the report afterwards with `npx playwright show-report`.
 
 One desktop for the whole run is fine with one worker. For Playwright workers side by side, wire the launch (below), which gives each app its own desktop, wrapped or not.
 

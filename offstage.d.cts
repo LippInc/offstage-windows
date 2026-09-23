@@ -24,7 +24,9 @@ export declare function electronLaunchOptions<T extends object = {}>(
  * an app that restarts itself or hands over) or `keepOrphans` (leave it). `timeout` is in whole seconds. `desktop` runs
  * it on an app's desktop (the app's OFFSTAGE_DESKTOP) instead of a new one, for a helper that works with the app's
  * windows by handle: from any other desktop the handle reads as an empty, hidden window.
- * Throws a TypeError when `desktop` is not a desktop's name (letters, digits, `_`, `.`, `-`).
+ * Throws a TypeError when `desktop` is not a desktop's name (letters, digits, `_`, `.`, `-`). A `.cmd` or `.bat` is
+ * returned unchanged, with a warning (run those through the CLI). When the helper cannot run, the program starts as is,
+ * without `timeout` or `waitForAll`, and a warning says so.
  */
 export declare function spawnArgs(
   file: string,

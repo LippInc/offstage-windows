@@ -231,6 +231,7 @@ await check(
         stopped.status === 0 &&
         !alive(stoppedPid) &&
         /stopped 1 process/.test(stopped.stderr) &&
+        stoppedMs >= 1500 &&
         stoppedMs < 8000 &&
         keptAlive &&
         keptRan,
@@ -325,8 +326,10 @@ await check('ten runs at once each get a desktop of their own', async () => {
 await check('a helper that is built but cannot run falls back to visible windows, saying why', async () => {
   const cache = mkdtempSync(join(tmpdir(), 'offstage-cache-'))
   // The trial run starts ComSpec; pointing it nowhere makes the new helper fail the way a blocked one would.
+  // The second spawnArgs call asks for a timeout, which a fallback cannot apply: that must be said too, even though the
+  // same failure was already reported once.
   const script = `const o = require(${JSON.stringify(offstageModule)});
-    console.log(JSON.stringify([o.spawnArgs('x.exe', ['a']), o.electronLaunchOptions({ args: ['.'] })]))`
+    console.log(JSON.stringify([o.spawnArgs('x.exe', ['a']), o.electronLaunchOptions({ args: ['.'] }), o.spawnArgs('y.exe', [], { timeout: 5 })]))`
   const run = spawnSync(node, ['-e', script], {
     encoding: 'utf8',
     env: envWith({ OFFSTAGE_CACHE: cache, ComSpec: join(cache, 'missing', 'cmd.exe') }),
@@ -336,8 +339,13 @@ await check('a helper that is built but cannot run falls back to visible windows
   return {
     ok:
       // The last line: a first use of Electron can print a download message first (seen on a fresh node_modules).
-      isDeepStrictEqual(JSON.parse(run.stdout.trim().split(/\r?\n/).pop()), [['x.exe', ['a']], { args: ['.'] }]) &&
+      isDeepStrictEqual(JSON.parse(run.stdout.trim().split(/\r?\n/).pop()), [
+        ['x.exe', ['a']],
+        { args: ['.'] },
+        ['y.exe', []],
+      ]) &&
       /the helper was built but does not run \(exit 127\); windows will show/.test(run.stderr) &&
+      /windows will show on screen, and timeout is not applied/.test(run.stderr) &&
       !left.some((name) => /^offstage-[0-9a-f]{12}\.exe$/.test(name)),
     detail: `returned ${run.stdout.trim()}; said ${JSON.stringify(run.stderr.trim())}; cached ${JSON.stringify(left)}`,
   }
@@ -581,14 +589,12 @@ await check(
     })
     // A wrapped run keeps Playwright's HTML report from opening a browser offstage, unless the caller chose otherwise.
     const reportOpen = (value) => {
-      const env = envWith(value ? { PLAYWRIGHT_HTML_OPEN: value } : {})
-      if (!value)
-        for (const name of Object.keys(env))
-          if (/^(PLAYWRIGHT_HTML_OPEN|PW_TEST_HTML_REPORT_OPEN)$/i.test(name)) delete env[name]
-      return spawnSync(node, [offstageModule, node, '-e', 'console.log(process.env.PLAYWRIGHT_HTML_OPEN)'], {
-        encoding: 'utf8',
-        env,
-      }).stdout.trim()
+      const env = envWith({})
+      for (const name of Object.keys(env))
+        if (/^(PLAYWRIGHT_HTML_OPEN|PW_TEST_HTML_REPORT_OPEN)$/i.test(name)) delete env[name]
+      if (value) env.PLAYWRIGHT_HTML_OPEN = value
+      const show = 'console.log(`${process.env.PLAYWRIGHT_HTML_OPEN} ${process.env.PW_TEST_HTML_REPORT_OPEN}`)'
+      return spawnSync(node, [offstageModule, node, '-e', show], { encoding: 'utf8', env }).stdout.trim()
     }
     const openDefault = reportOpen('')
     const openChosen = reportOpen('always')
@@ -602,8 +608,8 @@ await check(
         verbose.status === 0 &&
         blocked.status === 3 &&
         /the helper was built but does not run .*--timeout is not applied/.test(blocked.stderr) &&
-        openDefault === 'never' &&
-        openChosen === 'always',
+        openDefault === 'never never' &&
+        openChosen === 'always undefined',
       detail: `--timeout 1 on a .cmd: exit ${timed.status} after ${seconds.toFixed(1)} s; --verbose on a .cmd: exit ${verbose.status}, ${JSON.stringify(verbose.stderr.trim())}; helper blocked: exit ${blocked.status}, said ${JSON.stringify(blocked.stderr.trim())}; PLAYWRIGHT_HTML_OPEN in a wrapped run: ${openDefault} (unset), ${openChosen} (set to always)`,
     }
   },

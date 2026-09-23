@@ -827,12 +827,14 @@ function enabled(env = process.env) {
   )
 }
 
-// Each distinct reason once: an early, unrelated warning must not hide a later one.
+// Each distinct warning once: an early, unrelated warning must not hide a later one, and the same failure with a
+// different outcome (a timeout that is now dropped) is a different warning.
 const warned = new Set()
 function warnOnce(message, outcome = 'windows will show on screen') {
-  if (warned.has(message)) return
-  warned.add(message)
-  process.stderr.write(`offstage: ${message}; ${outcome}\n`)
+  const line = `offstage: ${message}; ${outcome}`
+  if (warned.has(line)) return
+  warned.add(line)
+  process.stderr.write(`${line}\n`)
 }
 
 // What falling back to visible windows also drops, said once with the reason: without the helper there is no timeout and
@@ -1169,11 +1171,12 @@ function main(argv) {
       : run(invocation.shell, [invocation.line], { windowsVerbatimArguments: true })
   }
   // A browser opened from the hidden desktop could not be seen (and a browser the user starts meanwhile would join it
-  // there), so Playwright's HTML report is not opened automatically unless the caller asks for it.
+  // there), so Playwright's HTML report is not opened automatically unless the caller asks for it. Older Playwright
+  // versions read only the older name.
   const env =
     process.env.PLAYWRIGHT_HTML_OPEN || process.env.PW_TEST_HTML_REPORT_OPEN
       ? process.env
-      : { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never' }
+      : { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never', PW_TEST_HTML_REPORT_OPEN: 'never' }
   if (invocation.file) {
     const flags = [
       ...(options.timeout ? ['--timeout', options.timeout] : []),

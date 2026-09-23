@@ -7,11 +7,11 @@ Fixes from a pre-launch review.
 - `electronLaunchOptions`: the app no longer outlives a Playwright worker or runner that is killed outright. Playwright starts the stand-in through cmd.exe on Windows, which puts it outside the job Node uses to end its children, so such an app kept running on a desktop no one could see. In stand-in mode the helper now ends the run when the process that started it ends.
 - The CLI's escaping for cmd.exe no longer mangles an argument with two or more backslashes before a quote or at its end. Before, the escaping taken from cross-spawn shifted every later argument when it ran through an npm `.bin` shim.
 - When the helper cannot run, offstage now says that `--timeout` and `--wait-all` (`timeout` and `waitForAll` in `spawnArgs`) are not applied, instead of dropping them silently.
-- A wrapped run sets `PLAYWRIGHT_HTML_OPEN=never` unless you set it, so Playwright does not open its HTML report in a browser on the hidden desktop.
+- A wrapped run sets `PLAYWRIGHT_HTML_OPEN=never` (and the older `PW_TEST_HTML_REPORT_OPEN`) unless you set either, so Playwright does not open its HTML report in a browser on the hidden desktop.
 - The helper always says when it cannot put the command in a job object. Before, it said so only with `--verbose`.
 - A first build whose rename is held up for a moment, for example by an antivirus scan, is retried before offstage gives up on the helper.
 - `spawnArgs` refuses a `.cmd` or `.bat` with a message that says it returns the file unchanged.
-- Types: `electronLaunchOptions` returns the options plus `executablePath` and `env`.
+- Types: the README's own `electron.launch(electronLaunchOptions({ args: ['.'] }))` now compiles in TypeScript. 0.1.0's types rejected `args` and clashed with Playwright's `env` type. The result is typed with `executablePath` and `env`.
 - README:
   - it no longer says nothing like this existed on Windows (hidden-desktop launchers such as RunHidden did), and says what offstage-windows adds;
   - the security section names the techniques (hidden desktops, compiling on the machine) and says a security team can see the runs;
