@@ -6,6 +6,8 @@
 
 **Run your Electron and Playwright GUI tests on Windows without them ever touching your screen.**
 
+<img alt="Test windows pop up over your editor and your typing goes into one of them; with npx offstage-windows typed in front of the test command, each new test window is pulled offstage to a hidden Windows desktop, where all 36 tests pass while your screen stays yours" src="https://raw.githubusercontent.com/LippInc/offstage-windows/main/media/demo.webp" width="100%">
+
 Automated runs of a desktop app open real windows: end-to-end tests, screenshot scripts, smoke tests of the packaged app. On Windows those windows pop up on your screen and take your keyboard focus while you work. When a coding agent runs your tests, that happens all day. On Linux you would reach for `xvfb-run`. Windows has had the pieces for decades: a program can create a hidden desktop (`CreateDesktop`) and start processes on it, and small launchers such as [RunHidden](https://github.com/meshko/RunHidden) (2013) do that for one program.
 
 offstage-windows builds a test tool from those pieces. It runs the whole session on a hidden Windows desktop: the test runner and everything it starts, with their output and exit code kept, and what they leave running cleaned up. The app renders as it does on screen (GPU, animations, focus, screenshots; timers too, with Chromium's anti-throttling switches below); you just never see it. Because each app launch can get a desktop and a focus of its own, GUI test runs can also go side by side on one machine without fighting over the keyboard.
