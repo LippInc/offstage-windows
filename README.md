@@ -32,7 +32,7 @@ or install it (`npm i -D offstage-windows`) and put it in `package.json`:
 }
 ```
 
-Everything the command starts (the test runner, Electron, its helper processes) opens its windows on one hidden desktop. The run's output and exit code are the command's own. Ctrl+C reaches the command as before, and whatever is still running 10 s later is stopped. When the command exits, anything it left running is stopped.
+Everything the command starts (the test runner, Electron or a headed browser, their helper processes) opens its windows on one hidden desktop. The run's output and exit code are the command's own. Ctrl+C reaches the command as before, and whatever is still running 10 s later is stopped. When the command exits, anything it left running is stopped.
 
 Playwright's HTML report does not open by itself in a wrapped run (offstage-windows sets `PLAYWRIGHT_HTML_OPEN=never`, and the older `PW_TEST_HTML_REPORT_OPEN`, unless you set either): a browser started from the hidden desktop would open where you cannot see it. Open the report afterwards with `npx playwright show-report`.
 
@@ -189,6 +189,7 @@ The compiled helper is found again by its file name, so keep its folder one that
 Tested on Windows 11 (build 26200), Node 24, Electron 44.3 and Playwright 1.63. The self-test also passes on every push on GitHub's `windows-latest` runner (Windows Server 2025), where the helper adds about 40 ms per launch. Windows 10 uses the same APIs but is untested.
 
 - **Two Electron apps in daily development**, each with 31 e2e tests and 38 app launches per run: all passed offstage, and a watcher on the visible desktop saw none of their windows. Screenshot checks of 887 and 155 steps also passed, as did packaged-app smoke tests.
+- **Headed Chromium through Playwright** (`headless: false`, a new context and page three times per test, two workers, a wrapped run): 8 browser windows opened offstage, typing into the pages worked, and the watcher saw none of them on the visible desktop.
 - **A probe app offstage:** GPU compositing on, animations at full frame rate, timers unthrottled, `capturePage` and CDP screenshots with the page's real pixels, `document.hasFocus()` true.
 - **A 60-second stress probe**, run offstage and on screen at the same time under load: the same number of animation frames (5,444 each), no gap over 250 ms in either, and 150 ms animations finishing alike.
 
