@@ -1,4 +1,4 @@
-# offstage-windows
+# <img src="https://raw.githubusercontent.com/LippInc/offstage-windows/main/media/icon-256.png" alt="" width="40" height="40"> offstage-windows
 
 [![ci](https://github.com/LippInc/offstage-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/LippInc/offstage-windows/actions/workflows/ci.yml)
 
