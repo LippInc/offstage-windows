@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.2 (2026-10-17)
+
+README only: `offstage.cjs` and `offstage.d.cts` are the same files as in 0.1.1.
+
+- A banner and a 30-second demo clip at the top. Both load from GitHub, so the package does not grow.
+- Headed browser runs (Playwright with `headless: false`) are named among what a wrapped run keeps offstage, with the measurement under "Measured".
+
+## 0.1.1 (2026-09-26)
 
 Fixes from a pre-launch review.
 
